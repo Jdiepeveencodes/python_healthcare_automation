@@ -1,0 +1,32 @@
+{
+  "BlueCross": {
+    "member_id_regex": "^ID-\\d{10}$",
+    "group_regex": "^G-\\d{6,9}$",
+    "requires_group_number": true,
+    "active_coverage_days": 365
+  },
+  "Aetna": {
+    "member_id_regex": "^ID-\\d{10}$",
+    "group_regex": "^G-\\d{6,9}$",
+    "requires_group_number": true,
+    "active_coverage_days": 365
+  },
+  "Kaiser": {
+    "member_id_regex": "^ID-\\d{10}$",
+    "group_regex": "^G-\\d{6,9}$",
+    "requires_group_number": true,
+    "active_coverage_days": 365
+  },
+  "United": {
+    "member_id_regex": "^ID-\\d{10}$",
+    "group_regex": "^G-\\d{6,9}$",
+    "requires_group_number": true,
+    "active_coverage_days": 365
+  },
+  "SelfPay": {
+    "member_id_regex": "^ID-\\d{10}$",
+    "group_regex": "^G-\\d{6,9}$",
+    "requires_group_number": false,
+    "active_coverage_days": 0
+  }
+}

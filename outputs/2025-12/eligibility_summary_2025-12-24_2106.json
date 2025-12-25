@@ -1,0 +1,15 @@
+{
+  "total_records": 1000,
+  "status_counts": {
+    "APPROVED": 999,
+    "REVIEW": 1
+  },
+  "percent_approved": 99.9,
+  "percent_review": 0.1,
+  "percent_rejected": 0.0,
+  "top_reasons": {
+    "PHONE_INVALID_LENGTH": 1
+  },
+  "generated_at": "2025-12-24_2106",
+  "output_folder": "C:\\Users\\jesse\\Desktop\\Coding&Dev\\Projects\\Portfolio - Automation\\healthcare-eligibility-automation\\outputs\\2025-12"
+}

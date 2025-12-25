@@ -1,0 +1,7 @@
+2025-12-24 21:17:27,691 | INFO | Starting eligibility automation run...
+2025-12-24 21:17:27,858 | INFO | Run complete.
+2025-12-24 21:17:27,859 | INFO | Wrote results: C:\Users\jesse\Desktop\Coding&Dev\Projects\Portfolio - Automation\healthcare-eligibility-automation\outputs\2025-12\eligibility_results_2025-12-24_2117.csv
+2025-12-24 21:17:27,859 | INFO | Wrote summary: C:\Users\jesse\Desktop\Coding&Dev\Projects\Portfolio - Automation\healthcare-eligibility-automation\outputs\2025-12\eligibility_summary_2025-12-24_2117.json
+2025-12-24 21:17:27,859 | INFO | Wrote intake queue: C:\Users\jesse\Desktop\Coding&Dev\Projects\Portfolio - Automation\healthcare-eligibility-automation\outputs\2025-12\intake_queue_2025-12-24_2117.csv
+2025-12-24 21:17:27,859 | INFO | Wrote insurance queue: C:\Users\jesse\Desktop\Coding&Dev\Projects\Portfolio - Automation\healthcare-eligibility-automation\outputs\2025-12\insurance_queue_2025-12-24_2117.csv
+2025-12-24 21:17:27,859 | INFO | Outputs stored in: C:\Users\jesse\Desktop\Coding&Dev\Projects\Portfolio - Automation\healthcare-eligibility-automation\outputs\2025-12
