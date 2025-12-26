@@ -45,7 +45,14 @@ python -m pip install -r requirements.txt
 
 echo.
 echo Running eligibility automation...
-python src\run.py
+REM If a file is dragged onto the .bat, it becomes %1
+if "%~1"=="" (
+  python src\run.py
+) else (
+  echo Using input file: %~1
+  python src\run.py --input "%~1" --archive-input
+)
+
 
 echo.
 echo ==========================================

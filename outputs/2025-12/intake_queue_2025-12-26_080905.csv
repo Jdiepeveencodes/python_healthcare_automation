@@ -1,0 +1,2 @@
+status,priority,owner_queue,next_action,patient_id,last_name,first_name,dob,service_date,insurance_provider,member_id,member_group,phone,address,state,gender,api_used,domain_reasons,reasons,api_error,intake_reasons,insurance_reasons
+REVIEW,MEDIUM,REGISTRATION,Verify phone number (10 digits),6GC9D16PX71,Ruben,Clemmie,8/12/2025,10/17/2025,BlueCross,ID-4393763102,G-6246707,() 4109014,3 6th Street,PA,Male,NO,PHONE_INVALID_LENGTH,PHONE_INVALID_LENGTH,,PHONE_INVALID_LENGTH,

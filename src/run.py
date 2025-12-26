@@ -1,28 +1,35 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+import requests
 
+# =========================
+# Paths + Run Identity
+# =========================
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
-# Single timestamp for this entire run (used across all outputs/logs)
-RUN_TIMESTAMP = datetime.now().strftime("%Y-%m-%d_%H%M")
-RUN_MONTH = datetime.now().strftime("%Y-%m")
-
-# Store this run under outputs/YYYY-MM/
+# Use one "now" for the entire run (keeps names consistent)
+NOW = datetime.now()
+RUN_TIMESTAMP = NOW.strftime("%Y-%m-%d_%H%M%S")  # clean timestamp format
+RUN_MONTH = NOW.strftime("%Y-%m")
 RUN_OUTPUT_DIR = OUTPUTS_DIR / RUN_MONTH
 
 
-# Matches YOUR dataset
+# =========================
+# Schema (matches your dataset)
+# =========================
 REQUIRED_COLUMNS = [
     "service_date",
     "dob",
@@ -45,6 +52,48 @@ class RuleResult:
     reasons: List[str]
 
 
+# =========================
+# CLI Args
+# =========================
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Healthcare Eligibility Automation")
+
+    parser.add_argument(
+        "--input",
+        default=str(DATA_DIR / "patient_intake.csv"),
+        help="Path to patient intake CSV (default: data/patient_intake.csv)",
+    )
+    parser.add_argument(
+        "--rules",
+        default=str(DATA_DIR / "insurance_rules.json"),
+        help="Path to insurance rules JSON (default: data/insurance_rules.json)",
+    )
+    parser.add_argument(
+        "--archive-input",
+        action="store_true",
+        help="If set, copies the input CSV into this run's output folder for audit continuity.",
+    )
+
+    # API mode
+    parser.add_argument(
+        "--api-url",
+        default="",
+        help="If set, calls this eligibility API per record (e.g., http://127.0.0.1:8000). "
+             "If the API fails, falls back to local rules.",
+    )
+    parser.add_argument(
+        "--api-timeout",
+        type=float,
+        default=5.0,
+        help="Eligibility API timeout (seconds). Default 5.",
+    )
+
+    return parser.parse_args()
+
+
+# =========================
+# Logging + IO
+# =========================
 def setup_logging() -> None:
     RUN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     log_path = RUN_OUTPUT_DIR / f"run_{RUN_TIMESTAMP}.log"
@@ -60,13 +109,15 @@ def load_rules(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
+# =========================
+# Parsers / Validators
+# =========================
 def parse_us_date(value: str) -> Tuple[date | None, str | None]:
     """Parse US-style dates like 12/31/2024 or 7/4/2025."""
     if value is None or str(value).strip() == "":
         return None, "MISSING_DATE"
 
     raw = str(value).strip()
-
     for fmt in ("%m/%d/%Y", "%m/%d/%y"):
         try:
             return datetime.strptime(raw, fmt).date(), None
@@ -91,6 +142,7 @@ INSURANCE_REASONS_EXACT = {
     "MISSING_MEMBER_GROUP",
     "MEMBER_GROUP_INVALID_FORMAT",
     "COVERAGE_POSSIBLY_INACTIVE",
+    "API_FALLBACK_USED",  # treat API fallback as insurance-side visibility by default
 }
 
 
@@ -107,7 +159,7 @@ def split_reason_domains(reasons_pipe: str) -> Tuple[List[str], List[str]]:
         elif r in INTAKE_REASONS_EXACT or r.startswith(INTAKE_REASON_PREFIXES):
             intake.append(r)
         else:
-            # Default unknown reasons to intake review (safe)
+            # Unknown reason codes default to intake review (safe)
             intake.append(r)
 
     return intake, insurance
@@ -126,7 +178,6 @@ def reasons_to_actions_intake(reasons: List[str]) -> Tuple[str, str]:
         actions.append("Correct service date (MM/DD/YYYY) and re-run intake")
         priority = "HIGH"
 
-    # Missing demographics/identifiers
     if any(r.startswith("MISSING_") for r in reasons):
         actions.append("Complete missing required intake fields (demographics/ID/insurance/provider/state)")
 
@@ -136,7 +187,6 @@ def reasons_to_actions_intake(reasons: List[str]) -> Tuple[str, str]:
     if not actions:
         actions.append("Review intake record manually")
 
-    # De-dupe preserve order
     seen = set()
     actions = [a for a in actions if not (a in seen or seen.add(a))]
     return " ; ".join(actions), priority
@@ -146,6 +196,9 @@ def reasons_to_actions_insurance(reasons: List[str]) -> Tuple[str, str]:
     """Return (next_action, priority) for insurance team."""
     actions: List[str] = []
     priority = "MEDIUM"
+
+    if "API_FALLBACK_USED" in reasons:
+        actions.append("API unavailable—processed using local rules (verify eligibility manually if needed)")
 
     if "PAYER_NOT_SUPPORTED" in reasons:
         actions.append("Payer not supported—collect alternate insurance or set SelfPay")
@@ -177,10 +230,12 @@ def reasons_to_actions_insurance(reasons: List[str]) -> Tuple[str, str]:
     return " ; ".join(actions), priority
 
 
+# =========================
+# Local Eligibility Logic
+# =========================
 def validate_row(row: pd.Series, rules: Dict[str, Any]) -> RuleResult:
     reasons: List[str] = []
 
-    # Core required fields (business + ops)
     for col in ["patient_id", "first_name", "last_name", "insurance_provider", "state"]:
         if str(row.get(col, "")).strip() == "":
             reasons.append(f"MISSING_{col.upper()}")
@@ -241,6 +296,63 @@ def validate_row(row: pd.Series, rules: Dict[str, Any]) -> RuleResult:
     return RuleResult(status=status, reasons=reasons)
 
 
+# =========================
+# API Mode + Fallback
+# =========================
+def call_eligibility_api(api_url: str, payload: dict, timeout: float) -> dict:
+    url = api_url.rstrip("/") + "/eligibility"
+    resp = requests.post(url, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def validate_row_with_api_fallback(
+    row: pd.Series,
+    rules: Dict[str, Any],
+    api_url: str,
+    api_timeout: float,
+) -> Tuple[RuleResult, bool, str]:
+    """
+    Returns: (RuleResult, api_used, api_error)
+
+    - If api_url provided, attempt API call.
+    - If API fails, log warning and fall back to local validate_row.
+    """
+    api_url = (api_url or "").strip()
+    if not api_url:
+        return validate_row(row, rules), False, ""
+
+    payload = {
+        "insurance_provider": str(row.get("insurance_provider", "")).strip(),
+        "member_id": str(row.get("member_id", "")).strip(),
+        "member_group": str(row.get("member_group", "")).strip(),
+        "dob": str(row.get("dob", "")).strip(),
+        "service_date": str(row.get("service_date", "")).strip(),
+    }
+
+    try:
+        api_result = call_eligibility_api(api_url, payload, api_timeout)
+
+        status = str(api_result.get("status", "REVIEW")).strip().upper()
+        reasons = api_result.get("reasons", [])
+        if not isinstance(reasons, list):
+            reasons = []
+
+        reasons = [str(r).strip() for r in reasons if str(r).strip()]
+        return RuleResult(status=status, reasons=reasons), True, ""
+
+    except Exception as e:
+        logging.warning(
+            f"Eligibility API failed for patient_id={row.get('patient_id','')}: {e} | Falling back to local rules."
+        )
+        local_result = validate_row(row, rules)
+        local_result.reasons.append("API_FALLBACK_USED")
+        return local_result, False, str(e)
+
+
+# =========================
+# Reporting
+# =========================
 def generate_summary(results_df: pd.DataFrame) -> Dict[str, Any]:
     total = len(results_df)
     status_counts = results_df["status"].value_counts(dropna=False).to_dict()
@@ -256,9 +368,14 @@ def generate_summary(results_df: pd.DataFrame) -> Dict[str, Any]:
     reason_series = reason_series[reason_series != ""]
     top_reasons = reason_series.value_counts().head(10).to_dict()
 
+    api_used_counts = {}
+    if "api_used" in results_df.columns:
+        api_used_counts = results_df["api_used"].value_counts(dropna=False).to_dict()
+
     return {
         "total_records": total,
         "status_counts": status_counts,
+        "api_used_counts": api_used_counts,
         "percent_approved": round((status_counts.get("APPROVED", 0) / total * 100) if total else 0, 2),
         "percent_review": round((status_counts.get("REVIEW", 0) / total * 100) if total else 0, 2),
         "percent_rejected": round((status_counts.get("REJECTED", 0) / total * 100) if total else 0, 2),
@@ -277,7 +394,6 @@ def build_work_queue(df_out: pd.DataFrame, domain: str) -> pd.DataFrame:
     if queue.empty:
         return queue
 
-    # Split reasons into domains
     split = queue["reasons"].fillna("").astype(str).apply(split_reason_domains)
     queue["intake_reasons"] = split.apply(lambda x: "|".join(x[0]))
     queue["insurance_reasons"] = split.apply(lambda x: "|".join(x[1]))
@@ -307,7 +423,6 @@ def build_work_queue(df_out: pd.DataFrame, domain: str) -> pd.DataFrame:
     else:
         raise ValueError("domain must be 'intake' or 'insurance'")
 
-    # Sort for humans
     sort_priority = {"HIGH": 0, "MEDIUM": 1}
     queue["priority_sort"] = queue["priority"].map(sort_priority).fillna(9).astype(int)
     queue = queue.sort_values(["priority_sort", "last_name", "first_name"]).drop(columns=["priority_sort"])
@@ -329,20 +444,27 @@ def build_work_queue(df_out: pd.DataFrame, domain: str) -> pd.DataFrame:
         "address",
         "state",
         "gender",
+        "api_used",
         "domain_reasons",
         "reasons",
+        "api_error",
     ]
     cols = [c for c in preferred_cols if c in queue.columns] + [c for c in queue.columns if c not in preferred_cols]
     return queue[cols]
 
 
-
+# =========================
+# Main
+# =========================
 def main() -> None:
+    args = parse_args()
     setup_logging()
-    logging.info("Starting eligibility automation run...")
 
-    intake_path = DATA_DIR / "patient_intake.csv"
-    rules_path = DATA_DIR / "insurance_rules.json"
+    logging.info("Starting eligibility automation run...")
+    logging.info(f"RUN_TIMESTAMP={RUN_TIMESTAMP} | RUN_OUTPUT_DIR={RUN_OUTPUT_DIR}")
+
+    intake_path = Path(args.input)
+    rules_path = Path(args.rules)
 
     if not intake_path.exists():
         raise FileNotFoundError(f"Missing input file: {intake_path}")
@@ -356,30 +478,52 @@ def main() -> None:
     if missing_cols:
         raise ValueError(f"Input is missing required columns: {missing_cols}")
 
+    if args.archive_input:
+        RUN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        archived = RUN_OUTPUT_DIR / f"input_{RUN_TIMESTAMP}.csv"
+        shutil.copy2(intake_path, archived)
+        logging.info(f"Archived input file to: {archived}")
+
+    api_url = str(args.api_url).strip()
+    api_timeout = float(args.api_timeout)
+    logging.info(f"API mode: {'ON' if api_url else 'OFF'} | api_url={api_url or '(none)'} | timeout={api_timeout}s")
+
     statuses: List[str] = []
     reasons_list: List[str] = []
+    api_used_list: List[str] = []
+    api_error_list: List[str] = []
 
     for _, row in df.iterrows():
-        result = validate_row(row, rules)
+        result, api_used, api_err = validate_row_with_api_fallback(
+            row=row,
+            rules=rules,
+            api_url=api_url,
+            api_timeout=api_timeout,
+        )
+
         statuses.append(result.status)
         reasons_list.append("|".join(result.reasons))
+        api_used_list.append("YES" if api_used else "NO")
+        api_error_list.append(api_err)
 
     df_out = df.copy()
     df_out["status"] = statuses
     df_out["reasons"] = reasons_list
 
+    # ---- API metadata columns (place these here) ----
+    df_out["api_used"] = api_used_list
+    df_out["api_error"] = api_error_list
+    # -----------------------------------------------
+
     RUN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) Full results (timestamped, stored under outputs/YYYY-MM/)
     results_csv = RUN_OUTPUT_DIR / f"eligibility_results_{RUN_TIMESTAMP}.csv"
     df_out.to_csv(results_csv, index=False)
 
-    # 2) Summary
-    summary = generate_summary(df_out[["status", "reasons"]])
+    summary = generate_summary(df_out[["status", "reasons", "api_used"]])
     summary_path = RUN_OUTPUT_DIR / f"eligibility_summary_{RUN_TIMESTAMP}.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    # 3) Specialty queues
     intake_queue_df = build_work_queue(df_out, domain="intake")
     insurance_queue_df = build_work_queue(df_out, domain="insurance")
 

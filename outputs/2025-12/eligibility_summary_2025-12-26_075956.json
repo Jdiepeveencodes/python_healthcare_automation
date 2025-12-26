@@ -1,0 +1,15 @@
+{
+  "total_records": 1000,
+  "status_counts": {
+    "APPROVED": 1000
+  },
+  "api_used_counts": {
+    "YES": 1000
+  },
+  "percent_approved": 100.0,
+  "percent_review": 0.0,
+  "percent_rejected": 0.0,
+  "top_reasons": {},
+  "generated_at": "2025-12-26_075956",
+  "output_folder": "C:\\Users\\jesse\\Desktop\\Coding&Dev\\Projects\\Portfolio - Automation\\healthcare-eligibility-automation\\python_healthcare_automation\\outputs\\2025-12"
+}
